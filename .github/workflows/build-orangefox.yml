@@ -105,19 +105,24 @@ jobs:
           # only has 15.6GB. soong_build runs right after lunch and is the
           # memory-heavy step; without headroom the runner gets killed
           # mid-bootstrap (exit 143, "runner has received a shutdown signal").
-          # Add a swapfile, but only when there is enough disk left for it.
-          if sudo swapon --show | grep -q /swapfile; then
-            echo "swapfile already active"
+          #
+          # The runner already ships a 3GB /swapfile, so add a second one
+          # rather than resizing it. Only do this when there is enough disk
+          # left: the OrangeFox sync already leaves ~25GB free and the build
+          # still needs space for out/.
+          if sudo swapon --show | grep -q /swapfile2; then
+            echo "second swapfile already active"
           else
             AVAILABLE_GB="$(df -Pk / | awk 'NR==2 {print int($4 / 1048576)}')"
-            if [ "$AVAILABLE_GB" -ge 22 ]; then
-              sudo fallocate -l 6G /swapfile
-              sudo chmod 600 /swapfile
-              sudo mkswap /swapfile
-              sudo swapon /swapfile
-              echo "swapfile enabled"
+            if [ "$AVAILABLE_GB" -ge 20 ]; then
+              # dd, not fallocate: a swapfile must not contain holes.
+              sudo dd if=/dev/zero of=/swapfile2 bs=1M count=8192 status=none
+              sudo chmod 600 /swapfile2
+              sudo mkswap /swapfile2
+              sudo swapon /swapfile2
+              echo "second swapfile enabled"
             else
-              echo "::warning::Only ${AVAILABLE_GB} GB free; skipping swapfile"
+              echo "::warning::Only ${AVAILABLE_GB} GB free; skipping extra swapfile"
             fi
           fi
           free -h
@@ -535,7 +540,9 @@ jobs:
           export LC_ALL=C
           export USE_CCACHE=1
           export CCACHE_EXEC=/usr/bin/ccache
-          ccache -M 5G
+          # Keep the cache small: the sync leaves ~25GB of disk and the build
+          # still needs room for out/.
+          ccache -M 2G
 
           test -f build/envsetup.sh || { echo "::error::build/envsetup.sh not found"; exit 1; }
           set +e
@@ -564,7 +571,23 @@ jobs:
           # TW_THEME is empty, so prove here that the device BoardConfig value
           # reached the build system.
           echo "TW_THEME=$(get_build_var TW_THEME 2>/dev/null || true)"
+
+          # Log memory/disk pressure every 10s. soong_build is where the
+          # runner died in earlier runs; this shows whether RAM/swap/disk was
+          # actually exhausted at that moment.
+          ( while true; do
+              echo "$(date -u +%H:%M:%S) mem=$(free -m | awk '/Mem:/{print $3"/"$2}')MB swap=$(free -m | awk '/Swap:/{print $3"/"$2}')MB disk=$(df -Pk / | awk 'NR==2{print int($4/1048576)}')GB"
+              sleep 10
+            done ) &
+          MONITOR_PID=$!
+          trap 'kill $MONITOR_PID 2>/dev/null || true
+                echo "===== FINAL free ====="; free -h
+                echo "===== FINAL df ====="; df -h /
+                echo "===== dmesg tail ====="; sudo dmesg 2>/dev/null | tail -25 || true' EXIT
+
           mka adbd recoveryimage -j"$ANDROID_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build-recovery.log"
+          kill $MONITOR_PID 2>/dev/null || true
+          trap - EXIT
 
       - name: Verify recovery image
         shell: bash
