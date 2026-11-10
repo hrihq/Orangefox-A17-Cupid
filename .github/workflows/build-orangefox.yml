@@ -432,7 +432,6 @@ jobs:
           # external/{freetype,jsoncpp,libpng,libvterm,lptools,se_omapi},
           # packages/modules/adb and system/{core,libbase,libvintf,libziparchive}.
           TRIM="
-          art
           dalvik
           libcore
           frameworks/base
