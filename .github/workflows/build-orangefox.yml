@@ -306,12 +306,23 @@ jobs:
             printf '\nPRODUCT_MAKEFILES += \\\n    $(LOCAL_DIR)/twrp_cupid.mk\n' >> "$PRODUCTS_FILE"
           fi
 
-      - name: Patch device tree (USB-OTG + NTFS)
+      - name: Patch device tree (USB-OTG + theme + NTFS)
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/android"
           DEV="$DEVICE_PATH"
+
+          # --- TWRP theme -------------------------------------------------
+          # The LineageOS cupid/sm8450-common trees are ROM trees: they carry
+          # no TWRP flags at all, so TW_THEME is never set. The recovery's
+          # Soong theme picker (bootable/recovery/gui/libfoxui_defaults.go,
+          # determineTheme/copyTheme) then finds no ui.xml and aborts the whole
+          # build at soong bootstrap with "Could not find ui.xml for TW_THEME:
+          # not set". OrangeFox's own sm84xx-common reference sets
+          # TW_THEME := portrait_hdpi; cupid is 1080x2400 (portrait, hdpi).
+          grep -q '^TW_THEME' "$DEV/BoardConfig.mk" || \
+            echo 'TW_THEME := portrait_hdpi' >> "$DEV/BoardConfig.mk"
 
           # --- USB-OTG ---------------------------------------------------
           # recovery.fstab (inherited from sm8450-common) has no TWRP-visible
@@ -344,7 +355,7 @@ jobs:
           echo "===== twrp.flags ====="
           cat "$DEV/recovery/root/system/etc/twrp.flags"
           echo "===== BoardConfig.mk tail ====="
-          tail -n 3 "$DEV/BoardConfig.mk"
+          tail -n 6 "$DEV/BoardConfig.mk"
 
       - name: Build recovery image
         shell: bash
@@ -388,6 +399,10 @@ jobs:
             cat build/release/release_config_map.textproto 2>/dev/null || true
             exit 1
           }
+          # The recovery's Soong theme picker aborts the whole build when
+          # TW_THEME is empty, so prove here that the device BoardConfig value
+          # reached the build system.
+          echo "TW_THEME=$(get_build_var TW_THEME 2>/dev/null || true)"
           mka adbd recoveryimage -j"$ANDROID_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build-recovery.log"
 
       - name: Verify recovery image
