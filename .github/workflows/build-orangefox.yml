@@ -114,16 +114,23 @@ jobs:
           check_branch "$DTBO_REPO" "$DEVICE_BRANCH"
           check_branch "$MODULES_REPO" "$DEVICE_BRANCH"
 
-          # Prefer a matching branch for qcom-caf common; LineageOS currently
-          # publishes lineage-23.2, so use it only when lineage-24.0 is absent.
-          if git ls-remote --exit-code --heads "$QCOM_COMMON_REPO" "refs/heads/$DEVICE_BRANCH" >/dev/null 2>&1; then
-            echo "QCOM_COMMON_BRANCH=$DEVICE_BRANCH" >> "$GITHUB_ENV"
-          elif git ls-remote --exit-code --heads "$QCOM_COMMON_REPO" "refs/heads/lineage-23.2" >/dev/null 2>&1; then
-            echo "QCOM_COMMON_BRANCH=lineage-23.2" >> "$GITHUB_ENV"
+          # hardware/qcom-caf/common from lineage-22.2 onward is written for
+          # LineageOS's own build/soong: its Android.bp uses the "mkdir" module
+          # type and select() on install_symlink's symlink_target, neither of
+          # which the OrangeFox build/soong fork implements. Parsing it aborts
+          # the whole build at soong bootstrap. lineage-21.0 is the newest
+          # branch whose Android.bp the fox_16.0 soong can parse.
+          if git ls-remote --exit-code --heads "$QCOM_COMMON_REPO" "refs/heads/lineage-21.0" >/dev/null 2>&1; then
+            echo "QCOM_COMMON_BRANCH=lineage-21.0" >> "$GITHUB_ENV"
           else
-            echo "::error::No compatible branch found in $QCOM_COMMON_REPO"
+            echo "::error::lineage-21.0 branch not found in $QCOM_COMMON_REPO"
             exit 1
           fi
+
+          # WLAN and the vendor display/dataservices trees are separate repos
+          # that the device trees reference by path.
+          echo "QCOM_WLAN_BRANCH=lineage-24.0-caf" >> "$GITHUB_ENV"
+          echo "QCOM_VENDOR_BRANCH=lineage-21.0" >> "$GITHUB_ENV"
 
           # Select an actually published SM8450 vendor sepolicy branch.
           if git ls-remote --exit-code --heads "$SEPOLICY_REPO" "refs/heads/lineage-24.0-caf-sm8450" >/dev/null 2>&1; then
@@ -159,31 +166,61 @@ jobs:
           git clone --depth=1 -b "$DEVICE_BRANCH" "$HARDWARE_REPO" hardware/xiaomi
           git clone --depth=1 -b "$QCOM_COMMON_BRANCH" "$QCOM_COMMON_REPO" hardware/qcom-caf/common
 
-          # Direct git clone does not apply LineageOS manifest linkfiles.
-          # The Qualcomm common project may not contain common.mk; do not
-          # require it. Recreate the SEPolicy linkfile expected by the tree.
+          # hardware/qcom-caf/common is only needed for its makefiles; the
+          # device trees inherit common.mk and include the os_pickup_* files.
+          test -f hardware/qcom-caf/common/common.mk || {
+            echo "::error::hardware/qcom-caf/common/common.mk is missing"
+            exit 1
+          }
+          test -f hardware/qcom-caf/common/os_pickup_qssi.bp || {
+            echo "::error::hardware/qcom-caf/common/os_pickup_qssi.bp is missing"
+            exit 1
+          }
           test -f hardware/qcom-caf/common/os_pickup_sepolicy_vndr.mk || {
             echo "::error::os_pickup_sepolicy_vndr.mk is missing"
-            find hardware/qcom-caf/common -maxdepth 2 -type f -print | head -100
             exit 1
           }
 
-          # Fetch the SM8450 project included by the vendor sepolicy makefile.
-          mkdir -p device/qcom/sepolicy_vndr hardware/qcom
-          git clone --depth=1 -b "$SEPOLICY_BRANCH" "$SEPOLICY_REPO" device/qcom/sepolicy_vndr/sm8450
-          test -f device/qcom/sepolicy_vndr/sm8450/SEPolicy.mk || {
-            echo "::error::SM8450 SEPolicy.mk is missing from branch $SEPOLICY_BRANCH"
-            find device/qcom/sepolicy_vndr/sm8450 -maxdepth 2 -type f -print | head -100
+          # Vendor sepolicy: the whole repo, which carries SEPolicy.mk at its
+          # root (there is no sm8450/ subproject in this branch).
+          git clone --depth=1 -b "$SEPOLICY_BRANCH" "$SEPOLICY_REPO" device/qcom/sepolicy_vndr
+          test -f device/qcom/sepolicy_vndr/SEPolicy.mk || {
+            echo "::error::SEPolicy.mk is missing from branch $SEPOLICY_BRANCH"
+            find device/qcom/sepolicy_vndr -maxdepth 2 -type f -print | head -100
             exit 1
           }
-          ln -sfn "$GITHUB_WORKSPACE/android/hardware/qcom-caf/common/os_pickup_sepolicy_vndr.mk" device/qcom/sepolicy_vndr/SEPolicy.mk
-          if [[ -f hardware/qcom-caf/common/os_pickup_aosp.mk ]]; then
-            ln -sfn "$GITHUB_WORKSPACE/android/hardware/qcom-caf/common/os_pickup_aosp.mk" hardware/qcom/Android.mk
-          fi
-          if [[ -f hardware/qcom-caf/common/os_pickup_qssi.bp ]]; then
-            mkdir -p hardware/qcom-caf/sm8450
-            ln -sfn "$GITHUB_WORKSPACE/android/hardware/qcom-caf/common/os_pickup_qssi.bp" hardware/qcom-caf/sm8450/Android.bp
-          fi
+
+          # hardware/qcom-caf/sm8450 is a stub namespace whose Android.bp is the
+          # qssi pickup from common.
+          mkdir -p hardware/qcom-caf/sm8450
+          cp hardware/qcom-caf/common/os_pickup_qssi.bp hardware/qcom-caf/sm8450/Android.bp
+
+          # WLAN driver tree, referenced by path from the device trees.
+          git clone --depth=1 -b "$QCOM_WLAN_BRANCH" \
+            https://github.com/LineageOS/android_hardware_qcom_wlan.git \
+            hardware/qcom-caf/wlan
+          test -f hardware/qcom-caf/wlan/Android.bp || {
+            echo "::error::hardware/qcom-caf/wlan/Android.bp is missing"
+            exit 1
+          }
+
+          # Vendor display/dataservices trees. sm8450-common's Android.bp
+          # declares a soong_namespace importing
+          # vendor/qcom/opensource/commonsys-intf/display, so it must exist.
+          for entry in \
+            "android_vendor_qcom_opensource_display-commonsys-intf vendor/qcom/opensource/commonsys-intf/display" \
+            "android_vendor_qcom_opensource_display-commonsys vendor/qcom/opensource/commonsys/display" \
+            "android_vendor_qcom_opensource_display vendor/qcom/opensource/display" \
+            "android_vendor_qcom_opensource_dataservices vendor/qcom/opensource/dataservices"; do
+            repo="${entry%% *}"
+            dest="${entry#* }"
+            git clone --depth=1 -b "$QCOM_VENDOR_BRANCH" \
+              "https://github.com/LineageOS/${repo}.git" "$dest"
+            test -f "$dest/Android.bp" || {
+              echo "::error::Android.bp is missing: $dest"
+              exit 1
+            }
+          done
 
           git clone --depth=1 -b "$DEVICE_BRANCH" "$KERNEL_REPO" kernel/xiaomi/sm8450
           git clone --depth=1 -b "$DEVICE_BRANCH" "$DTBO_REPO" kernel/xiaomi/sm8450-devicetrees
@@ -241,6 +278,92 @@ jobs:
             sleep 10
           done
 
+      - name: Disable conflicting WFD vendor module
+        shell: bash
+        run: |
+          set -eo pipefail
+          cd "$GITHUB_WORKSPACE/android"
+
+          # vendor/xiaomi/sm8450-common builds libwfdservice, which collides
+          # with the platform one during the recovery build. Upstream's
+          # reference workflow disables it; do the same, idempotently.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path("vendor/xiaomi/sm8450-common/Android.bp")
+          if not path.exists():
+              print("::error::vendor/xiaomi/sm8450-common/Android.bp is missing")
+              sys.exit(1)
+          content = path.read_text()
+
+          pattern = re.compile(
+              r'(?m)^[ \t]*(?:cc_[a-zA-Z0-9_]+|soong_namespace)[ \t]*\{'
+          )
+
+          target = None
+          for match in pattern.finditer(content):
+              brace = content.find("{", match.start())
+              depth = 0
+              quote = None
+              escaped = False
+              end = None
+
+              for i in range(brace, len(content)):
+                  char = content[i]
+                  if quote:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == quote:
+                          quote = None
+                      continue
+                  if char in ("'", '"', "`"):
+                      quote = char
+                  elif char == "{":
+                      depth += 1
+                  elif char == "}":
+                      depth -= 1
+                      if depth == 0:
+                          end = i + 1
+                          break
+
+              if end is None:
+                  continue
+              block = content[match.start():end]
+              if re.search(r'\bname\s*:\s*"libwfdservice"', block):
+                  target = (match.start(), end, block)
+                  break
+
+          if target is None:
+              print("libwfdservice module not found; nothing to do")
+              sys.exit(0)
+
+          start, end, block = target
+          if re.search(r'\benabled\s*:', block):
+              block = re.sub(
+                  r'\benabled\s*:\s*(?:true|false)\s*,',
+                  'enabled: false,',
+                  block,
+                  count=1,
+              )
+          else:
+              brace = block.find("{")
+              block = (
+                  block[:brace + 1]
+                  + "\n    enabled: false,"
+                  + block[brace + 1:]
+              )
+
+          path.write_text(content[:start] + block + content[end:])
+          print("libwfdservice disabled")
+          PY
+
+          grep -n -A8 -B3 'name: "libwfdservice"' \
+            vendor/xiaomi/sm8450-common/Android.bp || true
+
       - name: Validate device tree and recovery source
         shell: bash
         run: |
@@ -252,9 +375,16 @@ jobs:
             "$DEVICE_PATH/AndroidProducts.mk"
             "$DEVICE_PATH/lineage.dependencies"
             "$COMMON_PATH/BoardConfigCommon.mk"
+            "hardware/qcom-caf/common/common.mk"
+            "hardware/qcom-caf/common/os_pickup_qssi.bp"
             "hardware/qcom-caf/common/os_pickup_sepolicy_vndr.mk"
+            "hardware/qcom-caf/sm8450/Android.bp"
+            "hardware/qcom-caf/wlan/Android.bp"
             "device/qcom/sepolicy_vndr/SEPolicy.mk"
-            "device/qcom/sepolicy_vndr/sm8450/SEPolicy.mk"
+            "vendor/qcom/opensource/commonsys-intf/display/Android.bp"
+            "vendor/qcom/opensource/commonsys/display/Android.bp"
+            "vendor/qcom/opensource/display/Android.bp"
+            "vendor/qcom/opensource/dataservices/Android.bp"
           )
           for file in "${required_files[@]}"; do
             if [[ ! -f "$file" ]]; then
