@@ -306,6 +306,46 @@ jobs:
             printf '\nPRODUCT_MAKEFILES += \\\n    $(LOCAL_DIR)/twrp_cupid.mk\n' >> "$PRODUCTS_FILE"
           fi
 
+      - name: Patch device tree (USB-OTG + NTFS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/android"
+          DEV="$DEVICE_PATH"
+
+          # --- USB-OTG ---------------------------------------------------
+          # recovery.fstab (inherited from sm8450-common) has no TWRP-visible
+          # USB storage entry: its only USB line is an AOSP "voldmanaged" sysfs
+          # entry mounted at /storage/usbotg. TWRP's auto-mount looks for a
+          # partition named "usb_otg" and never finds one, so an OTG drive is
+          # never mounted and never shows up in the GUI storage list.
+          #
+          # Ship a twrp.flags with an explicit /usb_otg entry instead, the same
+          # way OrangeFox's own sm84xx-common reference tree does. The UFS LUNs
+          # take /dev/block/sda..sdf, so the first USB mass-storage disk is sdg;
+          # sdh1 is kept as the alternate for kernels that enumerate one more
+          # UFS LUN.
+          mkdir -p "$DEV/recovery/root/system/etc"
+          cat > "$DEV/recovery/root/system/etc/twrp.flags" <<'TWRP_FLAGS'
+          # mount point   fstype  device           device2          flags
+          # Removable storage (USB-OTG)
+          /usb_otg     auto    /dev/block/sdg1   /dev/block/sdh1  flags=display="USB OTG";storage;wipeingui;removable;fsflags=utf8
+          TWRP_FLAGS
+
+          # Make build/make copy <device>/recovery/root into the recovery
+          # ramdisk; that is how twrp.flags reaches /etc/twrp.flags.
+          grep -q '^TARGET_RECOVERY_DEVICE_DIRS' "$DEV/BoardConfig.mk" || \
+            echo 'TARGET_RECOVERY_DEVICE_DIRS := $(DEVICE_PATH)' >> "$DEV/BoardConfig.mk"
+
+          # NTFS support for OTG drives (matches OrangeFox sm84xx-common).
+          grep -q '^TW_INCLUDE_NTFS_3G' "$DEV/BoardConfig.mk" || \
+            echo 'TW_INCLUDE_NTFS_3G := true' >> "$DEV/BoardConfig.mk"
+
+          echo "===== twrp.flags ====="
+          cat "$DEV/recovery/root/system/etc/twrp.flags"
+          echo "===== BoardConfig.mk tail ====="
+          tail -n 3 "$DEV/BoardConfig.mk"
+
       - name: Build recovery image
         shell: bash
         run: |
@@ -315,6 +355,11 @@ jobs:
           export FOX_BUILD_DEVICE=cupid
           export FOX_AB_DEVICE=1
           export FOX_VIRTUAL_AB_DEVICE=1
+          # Build lptools into the recovery ramdisk (/system/bin/lptools).
+          # Without it, ROM zips that resize logical partitions abort with
+          # "this recovery has no lptools, so the logical partitions cannot
+          # be resized".
+          export OF_ENABLE_LPTOOLS=1
           export LC_ALL=C
           export USE_CCACHE=1
           export CCACHE_EXEC=/usr/bin/ccache
@@ -348,6 +393,26 @@ jobs:
           fi
           ls -lh "$IMAGE"
           sha256sum "$IMAGE" | tee recovery.img.sha256
+
+          # lptools must be present in the recovery ramdisk, otherwise
+          # dynamic-partition ROM zips refuse to resize logical partitions.
+          RECOVERY_ROOT="out/target/product/cupid/recovery/root"
+          if [[ ! -e "$RECOVERY_ROOT/system/bin/lptools" ]]; then
+            echo "::error::lptools is missing from the recovery ramdisk"
+            ls -l "$RECOVERY_ROOT/system/bin" 2>/dev/null | grep -i 'lp' || true
+            exit 1
+          fi
+          echo "lptools: $(ls -l "$RECOVERY_ROOT/system/bin/lptools")"
+
+          # The USB-OTG fstab entry must be installed next to recovery.fstab,
+          # otherwise TWRP never mounts an OTG drive.
+          if [[ ! -e "$RECOVERY_ROOT/system/etc/twrp.flags" ]] || \
+             ! grep -q '^/usb_otg' "$RECOVERY_ROOT/system/etc/twrp.flags"; then
+            echo "::error::twrp.flags without a /usb_otg entry did not reach the recovery ramdisk"
+            ls -l "$RECOVERY_ROOT/system/etc" 2>/dev/null | grep -i 'fstab\|flags' || true
+            exit 1
+          fi
+          grep '^/usb_otg' "$RECOVERY_ROOT/system/etc/twrp.flags"
 
       - name: Upload recovery.img only
         uses: actions/upload-artifact@v4
