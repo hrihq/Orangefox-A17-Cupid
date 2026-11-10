@@ -376,8 +376,18 @@ jobs:
             echo "::error::Function lunch was not loaded by envsetup.sh"
             exit 1
           }
-          # Android 16 lunch uses product-release-variant syntax.
-          lunch twrp_cupid-trunk_staging-eng
+          # Android 16 dropped the "trunk_staging" release config: at
+          # android-16.0.0_r1 build/release/release_configs/ defines only
+          # ap2a, ap3a, ap4a, bp1a and bp2a (aosp_current -> bp2a), and lunch
+          # defaults to bp2a when no release is given.
+          lunch twrp_cupid-bp2a-eng || {
+            echo "::error::lunch twrp_cupid-bp2a-eng failed"
+            echo "===== build/release/release_configs ====="
+            ls -1 build/release/release_configs/ 2>/dev/null || true
+            echo "===== release_config_map.textproto ====="
+            cat build/release/release_config_map.textproto 2>/dev/null || true
+            exit 1
+          }
           mka adbd recoveryimage -j"$ANDROID_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build-recovery.log"
 
       - name: Verify recovery image
