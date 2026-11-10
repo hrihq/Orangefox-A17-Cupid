@@ -97,6 +97,32 @@ jobs:
             exit 1
           fi
 
+      - name: Add swap for the build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The build system warns that it wants ~16GB of RAM and the runner
+          # only has 15.6GB. soong_build runs right after lunch and is the
+          # memory-heavy step; without headroom the runner gets killed
+          # mid-bootstrap (exit 143, "runner has received a shutdown signal").
+          # Add a swapfile, but only when there is enough disk left for it.
+          if sudo swapon --show | grep -q /swapfile; then
+            echo "swapfile already active"
+          else
+            AVAILABLE_GB="$(df -Pk / | awk 'NR==2 {print int($4 / 1048576)}')"
+            if [ "$AVAILABLE_GB" -ge 22 ]; then
+              sudo fallocate -l 6G /swapfile
+              sudo chmod 600 /swapfile
+              sudo mkswap /swapfile
+              sudo swapon /swapfile
+              echo "swapfile enabled"
+            else
+              echo "::warning::Only ${AVAILABLE_GB} GB free; skipping swapfile"
+            fi
+          fi
+          free -h
+          sudo swapon --show || true
+
       - name: Verify required LineageOS branches
         shell: bash
         run: |
@@ -496,6 +522,11 @@ jobs:
           export FOX_BUILD_DEVICE=cupid
           export FOX_AB_DEVICE=1
           export FOX_VIRTUAL_AB_DEVICE=1
+          # soong_build is a Go program and the runner has less RAM than the
+          # build wants. GOMEMLIMIT makes the runtime GC aggressively instead of
+          # growing the heap until the runner is OOM-killed.
+          export GOGC=50
+          export GOMEMLIMIT=12GiB
           # Build lptools into the recovery ramdisk (/system/bin/lptools).
           # Without it, ROM zips that resize logical partitions abort with
           # "this recovery has no lptools, so the logical partitions cannot
