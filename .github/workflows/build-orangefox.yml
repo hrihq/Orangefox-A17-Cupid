@@ -420,6 +420,11 @@ jobs:
             printf '%s %s\n' "${n:-0}" "$d"
           done | sort -rn | head -25
 
+          echo "===== ROOT Android.bp ====="
+          cat Android.bp
+          echo "===== ROOT Android.bp subdirs ====="
+          grep -n -A80 "subdirs" Android.bp | head -100
+
           # soong_build parses every Android.bp in the tree. The full OrangeFox
           # fox_16.0 tree needs >26GB RAM; the runner has 15.9GB RAM + swap and
           # the kernel OOM-kills soong_build. A recovery image does not compile
@@ -447,7 +452,6 @@ jobs:
           packages/providers/MediaProvider
           packages/screensavers
           packages/services/Telecomm
-          system/apex
           system/authgraph
           system/ca-certificates
           system/chre
