@@ -488,6 +488,66 @@ jobs:
           find . -name Android.bp -not -path "./.repo/*" -print0 | xargs -0 -r wc -l | tail -1
           df -h /
 
+      - name: Restore frameworks/base aconfig declarations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/android"
+
+          # Kept trees (e.g. system/security/keystore2) define rust_aconfig_library
+          # modules that depend on aconfig_declarations modules living in
+          # frameworks/base/AconfigFlags.bp - keystore2 needs
+          # "android.hardware.biometrics.flags-aconfig". The trim removes all of
+          # frameworks/base, the single biggest module generator, so restore only
+          # the aconfig pieces plus the package/license blocks.
+          rm -rf frameworks/base
+          git clone -q --depth=1 --filter=blob:none --sparse \
+            https://github.com/aosp-mirror/platform_frameworks_base.git \
+            frameworks/base
+          cd frameworks/base
+          git sparse-checkout set --no-cone \
+            '/AconfigFlags.bp' '/Android.bp' '/NOTICE' '**/*.aconfig'
+          python3 - <<'PY'
+          import re
+          t = open("Android.bp").read()
+          out = []
+          for m in re.finditer(r"(?m)^(?:package|license)\s*\{", t):
+              brace = t.index("{", m.start())
+              depth = 0
+              quote = None
+              esc = False
+              end = None
+              for i in range(brace, len(t)):
+                  c = t[i]
+                  if quote:
+                      if esc:
+                          esc = False
+                      elif c == chr(92):
+                          esc = True
+                      elif c == quote:
+                          quote = None
+                      continue
+                  if c in ("'", '"', "`"):
+                      quote = c
+                  elif c == "{":
+                      depth += 1
+                  elif c == "}":
+                      depth -= 1
+                      if depth == 0:
+                          end = i + 1
+                          break
+              if end:
+                  out.append(t[m.start():end])
+          open("Android.bp", "w").write("\n".join(out) + "\n")
+          PY
+          cd "$GITHUB_WORKSPACE/android"
+          echo "===== RESTORED frameworks/base aconfig ====="
+          echo "aconfig files: $(find frameworks/base -name '*.aconfig' | wc -l)"
+          test -f frameworks/base/AconfigFlags.bp
+          grep -q 'name: "android.hardware.biometrics.flags-aconfig"' frameworks/base/AconfigFlags.bp
+          echo "aconfig_declarations modules: $(grep -c 'aconfig_declarations {' frameworks/base/AconfigFlags.bp)"
+          grep -nE '^(package|license|java_library|java_defaults|filegroup|platform_compat_config) \{' frameworks/base/Android.bp
+
       - name: Validate device tree and recovery source
         shell: bash
         run: |
