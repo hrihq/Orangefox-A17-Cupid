@@ -416,7 +416,7 @@ jobs:
           find . -name Android.bp -not -path "./.repo/*" | cut -d/ -f2 | sort | uniq -c | sort -rn | head -25
           echo "--- Android.bp lines per top-level dir ---"
           for d in */; do
-            n="$(find "$d" -name Android.bp -print0 2>/dev/null | xargs -0 -r wc -l 2>/dev/null | tail -1 | awk '{print $1}')"
+            n="$(find "$d" -name Android.bp -print0 2>/dev/null | xargs -0 -r wc -l 2>/dev/null | awk '/total/{s+=$1} END{print s+0}')"
             printf '%s %s\n' "${n:-0}" "$d"
           done | sort -rn | head -25
 
@@ -443,7 +443,6 @@ jobs:
           hardware/nxp/uwb
           hardware/nxp/weaver
           hardware/qcom/wlan
-          kernel/configs
           packages/providers/ContactsKeysProvider
           packages/providers/MediaProvider
           packages/screensavers
