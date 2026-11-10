@@ -414,6 +414,11 @@ jobs:
           find . -name Android.bp -not -path "./.repo/*" -print0 | xargs -0 -r wc -l | tail -1
           echo "--- Android.bp files per top-level dir ---"
           find . -name Android.bp -not -path "./.repo/*" | cut -d/ -f2 | sort | uniq -c | sort -rn | head -25
+          echo "--- Android.bp lines per top-level dir ---"
+          for d in */; do
+            n="$(find "$d" -name Android.bp -print0 2>/dev/null | xargs -0 -r wc -l 2>/dev/null | tail -1 | awk '{print $1}')"
+            printf '%s %s\n' "${n:-0}" "$d"
+          done | sort -rn | head -25
 
           # soong_build parses every Android.bp in the tree. The full OrangeFox
           # fox_16.0 tree needs >26GB RAM; the runner has 15.9GB RAM + swap and
@@ -426,16 +431,13 @@ jobs:
           dalvik
           libcore
           frameworks/base
-          frameworks/opt/net/ims
-          frameworks/opt/net/voip
-          frameworks/opt/telephony
+          frameworks/opt
           frameworks/libs/binary_translation
           frameworks/libs/gsma_services
           cts
           development
           sdk
           test
-          toolchain/pgo-profiles
           hardware/google/aemu
           hardware/nxp/keymint
           hardware/nxp/uwb
