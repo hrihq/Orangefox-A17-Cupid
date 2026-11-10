@@ -395,6 +395,94 @@ jobs:
           grep -n -A8 -B3 'name: "libwfdservice"' \
             vendor/xiaomi/sm8450-common/Android.bp || true
 
+      - name: Trim projects a recovery build does not need
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/android"
+
+          echo "===== CGROUP MEMORY LIMITS ====="
+          cat /proc/self/cgroup || true
+          CGROUP="$(awk -F: '{print $3}' /proc/self/cgroup | head -1)"
+          for f in memory.max memory.swap.max memory.current memory.swap.current; do
+            echo "$f = $(cat "/sys/fs/cgroup${CGROUP}/${f}" 2>/dev/null || echo n/a)"
+          done
+          free -h
+
+          echo "===== MODULE COUNT BEFORE TRIM ====="
+          find . -name Android.bp -not -path "./.repo/*" | wc -l
+          find . -name Android.bp -not -path "./.repo/*" -print0 | xargs -0 -r wc -l | tail -1
+          echo "--- Android.bp files per top-level dir ---"
+          find . -name Android.bp -not -path "./.repo/*" | cut -d/ -f2 | sort | uniq -c | sort -rn | head -25
+
+          # soong_build parses every Android.bp in the tree. The full OrangeFox
+          # fox_16.0 tree needs >26GB RAM; the runner has 15.9GB RAM + swap and
+          # the kernel OOM-kills soong_build. A recovery image does not compile
+          # any of the projects below - the recovery tree itself only references
+          # external/{freetype,jsoncpp,libpng,libvterm,lptools,se_omapi},
+          # packages/modules/adb and system/{core,libbase,libvintf,libziparchive}.
+          TRIM="
+          art
+          dalvik
+          libcore
+          frameworks/base
+          frameworks/opt/net/ims
+          frameworks/opt/net/voip
+          frameworks/opt/telephony
+          frameworks/libs/binary_translation
+          frameworks/libs/gsma_services
+          cts
+          development
+          sdk
+          test
+          toolchain/pgo-profiles
+          hardware/google/aemu
+          hardware/nxp/keymint
+          hardware/nxp/uwb
+          hardware/nxp/weaver
+          hardware/qcom/wlan
+          kernel/configs
+          packages/providers/ContactsKeysProvider
+          packages/providers/MediaProvider
+          packages/screensavers
+          packages/services/Telecomm
+          system/apex
+          system/authgraph
+          system/ca-certificates
+          system/chre
+          system/dmesgd
+          system/gsid
+          system/incremental_delivery
+          system/linkerconfig
+          system/netd
+          system/secretkeeper
+          system/secure_element
+          system/see
+          system/server_configurable_flags
+          system/teeui
+          system/usb_info_tools
+          system/zygote
+          "
+          for d in $TRIM; do
+            if [ -d "$d" ]; then
+              rm -rf "$d"
+              echo "removed $d"
+            fi
+          done
+
+          # packages/modules/* except the two the recovery tree needs.
+          for d in packages/modules/*/; do
+            case "$d" in
+              packages/modules/adb/|packages/modules/common/) ;;
+              *) rm -rf "$d"; echo "removed $d" ;;
+            esac
+          done
+
+          echo "===== MODULE COUNT AFTER TRIM ====="
+          find . -name Android.bp -not -path "./.repo/*" | wc -l
+          find . -name Android.bp -not -path "./.repo/*" -print0 | xargs -0 -r wc -l | tail -1
+          df -h /
+
       - name: Validate device tree and recovery source
         shell: bash
         run: |
