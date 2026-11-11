@@ -488,6 +488,55 @@ jobs:
           find . -name Android.bp -not -path "./.repo/*" -print0 | xargs -0 -r wc -l | tail -1
           df -h /
 
+      - name: Drop the ART testing APEX
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/android"
+
+          # art/build/apex/Android.bp builds the "testing" ART APEX, whose
+          # apex_test module pulls in art_gtests. art_cmdline_tests is a
+          # multi-arch module, so the APEX ends up with bin/art_cmdline_tests
+          # from both the arm64 and the arm variant and soong rejects it. The
+          # recovery image does not use this test APEX.
+          python3 - <<'PY'
+          import re
+          p = "art/build/apex/Android.bp"
+          t = open(p).read()
+          m = re.search(r'(?m)^apex_test\s*\{\s*\n\s*name:\s*"com\.android\.art\.testing"', t)
+          if not m:
+              print("com.android.art.testing apex_test not found")
+              raise SystemExit(0)
+          brace = t.index("{", m.start())
+          depth = 0
+          quote = None
+          esc = False
+          end = None
+          for i in range(brace, len(t)):
+              c = t[i]
+              if quote:
+                  if esc:
+                      esc = False
+                  elif c == chr(92):
+                      esc = True
+                  elif c == quote:
+                      quote = None
+                  continue
+              if c in ("'", '"', "`"):
+                  quote = c
+              elif c == "{":
+                  depth += 1
+              elif c == "}":
+                  depth -= 1
+                  if depth == 0:
+                      end = i + 1
+                      break
+          if end:
+              open(p, "w").write(t[:m.start()] + t[end:])
+              print("removed com.android.art.testing apex_test")
+          PY
+          grep -c "com.android.art.testing" art/build/apex/Android.bp || echo "0 remaining"
+
       - name: Restore frameworks/base aconfig declarations
         shell: bash
         run: |
@@ -560,22 +609,6 @@ jobs:
           echo "aconfig files: $(find system/security/aconfig -name '*.aconfig' | wc -l)"
           grep -q 'name: "android.hardware.biometrics.flags-aconfig"' system/security/aconfig/Android.bp
           echo "modules: $(grep -c 'aconfig_declarations {' system/security/aconfig/Android.bp)"
-
-      - name: Dump diagnostics
-        if: always()
-        shell: bash
-        run: |
-          cd "$GITHUB_WORKSPACE/android" || exit 0
-          echo "===== Android.bp.list: frameworks/base ====="
-          grep -n "frameworks/base" out/.module_paths/Android.bp.list 2>/dev/null | head -20 || echo "no frameworks/base entries"
-          echo "===== Android.bp.list: system/security/aconfig ====="
-          grep -n "system/security/aconfig" out/.module_paths/Android.bp.list 2>/dev/null | head -5 || echo "no aconfig entries"
-          echo "===== Android.bp.list total ====="
-          wc -l out/.module_paths/Android.bp.list 2>/dev/null || true
-          echo "===== keystore2 biometrics block ====="
-          grep -n -B2 -A4 "libaconfig_android_hardware_biometrics_rust" system/security/keystore2/Android.bp 2>/dev/null || echo "not found"
-          echo "===== aconfig biometrics module ====="
-          grep -n -A5 'name: "android.hardware.biometrics.flags-aconfig"' system/security/aconfig/Android.bp 2>/dev/null || echo "not found"
 
       - name: Validate device tree and recovery source
         shell: bash
@@ -770,6 +803,20 @@ jobs:
           mka adbd recoveryimage -j"$ANDROID_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build-recovery.log"
           kill $MONITOR_PID 2>/dev/null || true
           trap - EXIT
+
+      - name: Dump diagnostics
+        if: always()
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/android" || exit 0
+          echo "===== Android.bp.list: system/security/aconfig ====="
+          grep -n "system/security/aconfig" out/.module_paths/Android.bp.list 2>/dev/null | head -5 || echo "no aconfig entries"
+          echo "===== Android.bp.list total ====="
+          wc -l out/.module_paths/Android.bp.list 2>/dev/null || true
+          echo "===== aconfig biometrics module ====="
+          grep -n -A5 'name: "android.hardware.biometrics.flags-aconfig"' system/security/aconfig/Android.bp 2>/dev/null || echo "not found"
+          echo "===== last build errors ====="
+          grep -n "error:\|panic in GenerateBuildActions\|FAILED:" "$GITHUB_WORKSPACE/build-recovery.log" 2>/dev/null | tail -15 || echo "no build log"
 
       - name: Verify recovery image
         shell: bash
