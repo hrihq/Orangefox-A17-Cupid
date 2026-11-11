@@ -499,19 +499,33 @@ jobs:
           # frameworks/base/AconfigFlags.bp - keystore2 needs
           # "android.hardware.biometrics.flags-aconfig". The trim removes all of
           # frameworks/base, the single biggest module generator, so restore only
-          # the aconfig pieces plus the package/license blocks.
+          # the aconfig pieces.
           rm -rf frameworks/base
           git clone -q --depth=1 --filter=blob:none --sparse \
             https://github.com/aosp-mirror/platform_frameworks_base.git \
             frameworks/base
           cd frameworks/base
-          git sparse-checkout set --no-cone \
-            '/AconfigFlags.bp' '/Android.bp' '/NOTICE' '**/*.aconfig'
+          git sparse-checkout set --no-cone '/AconfigFlags.bp' '/NOTICE' '**/*.aconfig'
+          cd "$GITHUB_WORKSPACE/android"
+
+          # Mirror the aconfig sources and the aconfig_declarations modules into
+          # system/security/aconfig, a project the sync definitely indexes, so the
+          # declarations do not depend on a hand-made frameworks/base directory
+          # being picked up by the module finder.
+          rm -rf system/security/aconfig
+          mkdir -p system/security/aconfig
+          (
+            cd frameworks/base
+            find . -name '*.aconfig' -print0 | while IFS= read -r -d '' f; do
+              mkdir -p "../system/security/aconfig/$(dirname "$f")"
+              cp "$f" "../system/security/aconfig/$f"
+            done
+          )
           python3 - <<'PY'
           import re
-          t = open("Android.bp").read()
+          t = open("frameworks/base/AconfigFlags.bp").read()
           out = []
-          for m in re.finditer(r"(?m)^(?:package|license)\s*\{", t):
+          for m in re.finditer(r"(?m)^aconfig_declarations\s*\{", t):
               brace = t.index("{", m.start())
               depth = 0
               quote = None
@@ -538,15 +552,30 @@ jobs:
                           break
               if end:
                   out.append(t[m.start():end])
-          open("Android.bp", "w").write("\n".join(out) + "\n")
+          open("system/security/aconfig/Android.bp", "w").write("\n".join(out) + "\n")
+          print("aconfig_declarations modules:", len(out))
           PY
-          cd "$GITHUB_WORKSPACE/android"
-          echo "===== RESTORED frameworks/base aconfig ====="
-          echo "aconfig files: $(find frameworks/base -name '*.aconfig' | wc -l)"
-          test -f frameworks/base/AconfigFlags.bp
-          grep -q 'name: "android.hardware.biometrics.flags-aconfig"' frameworks/base/AconfigFlags.bp
-          echo "aconfig_declarations modules: $(grep -c 'aconfig_declarations {' frameworks/base/AconfigFlags.bp)"
-          grep -nE '^(package|license|java_library|java_defaults|filegroup|platform_compat_config) \{' frameworks/base/Android.bp
+          rm -rf frameworks/base
+          echo "===== RESTORED aconfig ====="
+          echo "aconfig files: $(find system/security/aconfig -name '*.aconfig' | wc -l)"
+          grep -q 'name: "android.hardware.biometrics.flags-aconfig"' system/security/aconfig/Android.bp
+          echo "modules: $(grep -c 'aconfig_declarations {' system/security/aconfig/Android.bp)"
+
+      - name: Dump diagnostics
+        if: always()
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/android" || exit 0
+          echo "===== Android.bp.list: frameworks/base ====="
+          grep -n "frameworks/base" out/.module_paths/Android.bp.list 2>/dev/null | head -20 || echo "no frameworks/base entries"
+          echo "===== Android.bp.list: system/security/aconfig ====="
+          grep -n "system/security/aconfig" out/.module_paths/Android.bp.list 2>/dev/null | head -5 || echo "no aconfig entries"
+          echo "===== Android.bp.list total ====="
+          wc -l out/.module_paths/Android.bp.list 2>/dev/null || true
+          echo "===== keystore2 biometrics block ====="
+          grep -n -B2 -A4 "libaconfig_android_hardware_biometrics_rust" system/security/keystore2/Android.bp 2>/dev/null || echo "not found"
+          echo "===== aconfig biometrics module ====="
+          grep -n -A5 'name: "android.hardware.biometrics.flags-aconfig"' system/security/aconfig/Android.bp 2>/dev/null || echo "not found"
 
       - name: Validate device tree and recovery source
         shell: bash
